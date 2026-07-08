@@ -3,6 +3,7 @@ services:
     name: radpt-rdkit
     runtime: python
     plan: free
+    pythonVersion: "3.12.7"
     buildCommand: "pip install -r requirements.txt"
     startCommand: "gunicorn app:app --bind 0.0.0.0:$PORT --timeout 120"
     healthCheckPath: /
