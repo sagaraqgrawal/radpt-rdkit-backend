@@ -20,6 +20,14 @@ from rdkit.Chem import (
 )
 from rdkit.Chem import FilterCatalog
 
+# Optional: dimorphite-dl for real protonation-state (ionization) prediction at pH 7.4.
+# If it isn't installed, the backend still runs and just omits the ionization block.
+try:
+    from dimorphite_dl import protonate_smiles as _protonate
+    _HAS_DIMORPHITE = True
+except Exception:
+    _HAS_DIMORPHITE = False
+
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
@@ -34,6 +42,9 @@ _C = FilterCatalog.FilterCatalogParams.FilterCatalogs
 _PAINS = _make_catalog(_C.PAINS)
 _BRENK = _make_catalog(_C.BRENK)
 _NIH   = _make_catalog(_C.NIH)
+_SURECHEMBL = _make_catalog(_C.CHEMBL_SureChEMBL)
+_ZINC  = _make_catalog(_C.ZINC)
+_CHEMBL = _make_catalog(_C.CHEMBL)   # aggregate of the medchem-firm alert sets
 
 
 def _round(x, n=3):
@@ -52,6 +63,34 @@ def _abbott_bioavailability(mol, tpsa, logp, mw, hbd, hba, rotb):
     # neutral/positive path — pass if Ro5-ish and TPSA<=150
     passes = (mw <= 500 and logp <= 5 and hbd <= 5 and hba <= 10 and rotb <= 10 and tpsa <= 150)
     return 0.55 if passes else 0.11
+
+
+def _ionization_at_ph74(smiles, neutral_charge):
+    """Real protonation-state prediction at pH 7.4 via dimorphite-dl (if available)."""
+    if not _HAS_DIMORPHITE:
+        return None
+    try:
+        forms = _protonate(smiles, ph_min=7.4, ph_max=7.4)
+        if not forms:
+            return None
+        prot = forms[0]
+        m = Chem.MolFromSmiles(prot)
+        if m is None:
+            return None
+        charge = Chem.GetFormalCharge(m)
+        if charge < neutral_charge:
+            cls = "Anionic (acidic)"
+        elif charge > neutral_charge:
+            cls = "Cationic (basic)"
+        elif charge < 0:
+            cls = "Anionic"
+        elif charge > 0:
+            cls = "Cationic"
+        else:
+            cls = "Neutral"
+        return {"protonated_smiles": prot, "net_charge_pH7.4": charge, "class": cls}
+    except Exception:
+        return None
 
 
 def compute(smiles: str) -> dict:
@@ -118,6 +157,12 @@ def compute(smiles: str) -> dict:
     pains = [e.GetDescription() for e in _PAINS.GetMatches(mol)]
     brenk = [e.GetDescription() for e in _BRENK.GetMatches(mol)]
     nih   = [e.GetDescription() for e in _NIH.GetMatches(mol)]
+    surechembl = [e.GetDescription() for e in _SURECHEMBL.GetMatches(mol)]
+    zinc  = [e.GetDescription() for e in _ZINC.GetMatches(mol)]
+    chembl = [e.GetDescription() for e in _CHEMBL.GetMatches(mol)]
+
+    # --- ionization state at pH 7.4 (real, dimorphite) ---
+    ionization = _ionization_at_ph74(smiles, formal_charge)
 
     return {
         "valid": True,
@@ -173,7 +218,11 @@ def compute(smiles: str) -> dict:
             "pains": {"count": len(pains), "matches": pains[:8]},
             "brenk": {"count": len(brenk), "matches": brenk[:8]},
             "nih":   {"count": len(nih),   "matches": nih[:8]},
+            "surechembl": {"count": len(surechembl), "matches": surechembl[:8]},
+            "zinc":  {"count": len(zinc),  "matches": zinc[:8]},
+            "chembl_firms": {"count": len(chembl), "matches": chembl[:8]},
         },
+        "ionization_pH74": ionization,
     }
 
 
