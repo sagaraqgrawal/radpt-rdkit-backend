@@ -39,10 +39,12 @@ from rdkit.Chem import (
     RDConfig
 )
 from rdkit.Chem import FilterCatalog
-from rdkit.Chem import rdFingerprintGenerator
+from rdkit.Chem import rdFingerprintGenerator  # noqa: F401  (kept for other uses)
 
-# Morgan/ECFP4 generator (current API; GetMorganFingerprintAsBitVect is deprecated)
-_MORGAN_GEN = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
+# Morgan/ECFP4 generator lives in ad.py so the applicability-domain reference
+# fingerprints and the query fingerprint are guaranteed to be constructed identically.
+import ad
+_MORGAN_GEN = ad.MORGAN_GEN
 
 # ----------------------------------------------------------------------------
 # Synthetic accessibility score (Ertl & Schuffenhauer 2009).
@@ -399,6 +401,7 @@ def compute(smiles: str) -> dict:
         },
         "ionization_pH74": ionization,
         "microspecies_pH74": microspecies,
+        "applicability_domain": ad.assess(mol),
         "fingerprint": {
             "type": "Morgan/ECFP4, radius 2, 2048 bits",
             "on_bits": fp_bits,
@@ -419,6 +422,7 @@ def _status():
             "mode": _DIMORPHITE_MODE,
             "error": None if _HAS_DIMORPHITE else _DIMORPHITE_ERR,
         },
+        "applicability_domain": ad.status(),
     }
 
 
