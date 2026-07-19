@@ -1,0 +1,125 @@
+"""
+Build a publication-grade AD reference set from ChEMBL approved drugs.
+
+Run this ONCE locally, commit the resulting reference_drugs.smi alongside app.py,
+and deploy. ad.py picks the file up automatically and ignores its seed set.
+
+    python build_reference_set.py
+
+Do NOT run this at container startup on Render — the free tier will time out and
+you would be re-fetching an unchanging dataset on every cold start.
+
+Source: ChEMBL REST API, molecules with max_phase=4 (approved). Filters applied:
+  - small molecule type only (excludes biologics, which are outside RADPT's scope)
+  - parseable by RDKit
+  - MW 100-900 (excludes salts-only fragments and very large peptidics)
+  - deduplicated on canonical SMILES
+
+Citation for the reference set: Zdrazil et al. (2024) Nucleic Acids Res 52:D1180-92.
+Record the ChEMBL release number printed at the end in your methods section.
+"""
+
+import sys
+import time
+import urllib.parse
+import urllib.request
+import json
+
+from rdkit import Chem, RDLogger
+from rdkit.Chem import Descriptors
+
+RDLogger.DisableLog("rdApp.*")
+
+BASE = "https://www.ebi.ac.uk/chembl/api/data/molecule.json"
+PAGE_SIZE = 1000
+OUT = "reference_drugs.smi"
+MW_MIN, MW_MAX = 100.0, 900.0
+
+
+def fetch_page(offset):
+    params = {
+        "max_phase": 4,
+        "molecule_type": "Small molecule",
+        "limit": PAGE_SIZE,
+        "offset": offset,
+    }
+    url = BASE + "?" + urllib.parse.urlencode(params)
+    with urllib.request.urlopen(url, timeout=60) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def main():
+    seen = set()
+    records = []
+    offset = 0
+
+    while True:
+        try:
+            page = fetch_page(offset)
+        except Exception as e:
+            print(f"fetch failed at offset {offset}: {e}", file=sys.stderr)
+            break
+
+        molecules = page.get("molecules", [])
+        if not molecules:
+            break
+
+        for m in molecules:
+            structs = m.get("molecule_structures") or {}
+            smi = structs.get("canonical_smiles")
+            name = (m.get("pref_name") or m.get("molecule_chembl_id") or "unnamed").strip()
+            if not smi:
+                continue
+
+            mol = Chem.MolFromSmiles(smi)
+            if mol is None:
+                continue
+
+            # keep the largest fragment (strips counterions)
+            frags = Chem.GetMolFrags(mol, asMols=True, sanitizeFrags=True)
+            if frags:
+                mol = max(frags, key=lambda f: f.GetNumHeavyAtoms())
+
+            mw = Descriptors.MolWt(mol)
+            if not (MW_MIN <= mw <= MW_MAX):
+                continue
+
+            canon = Chem.MolToSmiles(mol)
+            if canon in seen:
+                continue
+            seen.add(canon)
+            records.append((name.replace("\t", " "), canon))
+
+        print(f"  offset {offset}: {len(records)} kept so far", file=sys.stderr)
+        offset += PAGE_SIZE
+        if not page.get("page_meta", {}).get("next"):
+            break
+        time.sleep(0.3)  # be polite to EBI
+
+    if len(records) < 100:
+        print(
+            f"ERROR: only {len(records)} records retrieved. Not writing {OUT} — "
+            "ad.py would calibrate badly on this. Investigate before retrying.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    with open(OUT, "w", encoding="utf-8") as fh:
+        fh.write("# RADPT applicability-domain reference set\n")
+        fh.write("# Source: ChEMBL REST API, max_phase=4, small molecules\n")
+        fh.write(f"# Retrieved: {time.strftime('%Y-%m-%d')}\n")
+        fh.write(f"# Records: {len(records)}\n")
+        fh.write("# Format: name<TAB>canonical_smiles\n")
+        for name, smi in records:
+            fh.write(f"{name}\t{smi}\n")
+
+    print(f"\nWrote {len(records)} reference structures to {OUT}", file=sys.stderr)
+    print(
+        "Record the ChEMBL release used (check https://www.ebi.ac.uk/chembl/ "
+        "for the current version) in your methods section.",
+        file=sys.stderr,
+    )
+
+
+if __name__ == "__main__":
+    main()
