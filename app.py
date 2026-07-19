@@ -1,8 +1,15 @@
 """
-RADPT RDKit backend — v2
+RADPT RDKit backend — v3
 ========================
 Flask API computing REAL, deterministic molecular descriptors from SMILES via RDKit.
 Nothing here is AI-estimated. Every value is reproducible from the molecular graph.
+
+CHANGES FROM v2
+---------------
+1. ADDED  Applicability domain assessment (ad.py) — max/kNN Tanimoto similarity to a
+          reference set of approved drugs, with self-calibrated thresholds.
+2. MOVED  The Morgan fingerprint generator now lives in ad.py and is imported here,
+          so query and reference fingerprints are built identically.
 
 CHANGES FROM v1
 ---------------
@@ -39,10 +46,9 @@ from rdkit.Chem import (
     RDConfig
 )
 from rdkit.Chem import FilterCatalog
-from rdkit.Chem import rdFingerprintGenerator  # noqa: F401  (kept for other uses)
 
 # Morgan/ECFP4 generator lives in ad.py so the applicability-domain reference
-# fingerprints and the query fingerprint are guaranteed to be constructed identically.
+# fingerprints and the query fingerprint are guaranteed to be built identically.
 import ad
 _MORGAN_GEN = ad.MORGAN_GEN
 
@@ -162,11 +168,9 @@ def _abbott_bioavailability(charge, tpsa, mw, logp, hbd, hba):
     v1 BUG: the neutral/cationic failure branch returned 0.11, so the score could
     never emit 0.17, and the anionic branch was collapsed to a single threshold.
 
-    >>> VERIFY THIS AGAINST MARTIN (2005) BEFORE PUBLISHING ANY VALUE FROM IT. <<<
+    >>> VERIFY THIS AGAINST MARTIN (2005) BEFORE RELYING ON ANY VALUE FROM IT. <<<
     The branch structure below reflects the scheme as commonly implemented
     (e.g. SwissADME), whose permissible outputs are 0.11, 0.17, 0.55, 0.56, 0.85.
-    Sagar: read the primary paper, confirm the TPSA cut-offs, and delete this
-    warning once you have. Do not publish a number you have not traced to source.
     """
     if charge < 0:                       # anionic
         if tpsa < 75:
@@ -298,7 +302,7 @@ def compute(smiles: str) -> dict:
     bertz   = _round(GraphDescriptors.BertzCT(mol), 1)
     qed_val = QED.qed(mol)
 
-    # --- synthetic accessibility (NEW — was AI-estimated in v1) ---
+    # --- synthetic accessibility ---
     if _HAS_SASCORER:
         sa = {
             "value": _round(sascorer.calculateScore(mol), 2),
@@ -430,7 +434,7 @@ def _status():
 def health():
     return jsonify({
         "status": "ok",
-        "service": "RADPT RDKit backend v2",
+        "service": "RADPT RDKit backend v3",
         "components": _status(),
     })
 
@@ -482,5 +486,5 @@ def batch():
 
 
 if __name__ == "__main__":
-    print("RADPT backend v2 — component status:", _status(), flush=True)
+    print("RADPT backend v3 — component status:", _status(), flush=True)
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
